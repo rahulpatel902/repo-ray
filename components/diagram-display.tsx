@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from "react";
 import mermaid from "mermaid";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
 import { Button } from "@/components/ui/button";
-import { ZoomIn, ZoomOut, RotateCcw, Copy, Download } from "lucide-react";
+import { ZoomIn, ZoomOut, RotateCcw, Copy } from "lucide-react"; // Removed Maximize/Minimize
 
 interface DiagramDisplayProps {
     chart: string;
@@ -20,15 +20,9 @@ export default function DiagramDisplay({ chart }: DiagramDisplayProps) {
                 startOnLoad: true,
                 theme: "dark",
                 securityLevel: "loose",
-                fontFamily: "ui-sans-serif, system-ui, sans-serif",
+                useMaxWidth: false,
             });
 
-            mermaid.contentLoaded();
-
-            // Clear previous
-            containerRef.current.innerHTML = "";
-
-            // Render
             try {
                 const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`;
                 mermaid.render(id, chart).then(({ svg }) => {
@@ -52,7 +46,8 @@ export default function DiagramDisplay({ chart }: DiagramDisplayProps) {
     };
 
     return (
-        <div className="w-full h-full min-h-[500px] flex flex-col bg-black/40 backdrop-blur-sm border border-white/10 rounded-xl overflow-hidden shadow-2xl">
+        // Height increased to 85vh, Fullscreen removed
+        <div className="w-full h-[85vh] flex flex-col bg-black/90 backdrop-blur-md border border-white/10 rounded-xl overflow-hidden shadow-2xl">
             {/* Toolbar */}
             <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 bg-white/5">
                 <div className="flex items-center gap-2">
@@ -68,10 +63,12 @@ export default function DiagramDisplay({ chart }: DiagramDisplayProps) {
             {/* Canvas */}
             <div className="flex-1 w-full h-full relative bg-[url('https://grainy-gradients.vercel.app/noise.svg')] bg-opacity-5">
                 <TransformWrapper
-                    initialScale={1}
-                    minScale={0.5}
-                    maxScale={4}
-                    centerOnInit
+                    initialScale={2} // Good default zoom
+                    minScale={0.5}   // Don't let it get microscopic
+                    maxScale={8}     // Reasonable max zoom
+                    centerOnInit={true}
+                    limitToBounds={true} // KEEPS IT IN THE ZONE (No Infinity)
+                    wheel={{ step: 0.1 }}
                 >
                     {({ zoomIn, zoomOut, resetTransform }) => (
                         <>

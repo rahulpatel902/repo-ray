@@ -8,93 +8,114 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "Repository URL is required" }, { status: 400 });
         }
 
-        // Parse Owner/Repo
         const match = repoUrl.match(/github\.com\/([^\/]+)\/([^\/]+)/);
         if (!match) {
             return NextResponse.json({ error: "Invalid GitHub URL" }, { status: 400 });
         }
         const [, owner, repo] = match;
 
-        // 1. Fetch File Tree from GitHub API
-        console.log(`Fetching structure for ${owner}/${repo}...`);
-
+        // Headers (Auth is critical for recursive fetch)
         const headers: HeadersInit = {
             "Accept": "application/vnd.github.v3+json",
             "User-Agent": "Repo-Ray-Hackathon-App"
         };
-
-        // Use Token if available (Crucial for Rate Limits)
         if (process.env.GITHUB_TOKEN) {
             headers["Authorization"] = `token ${process.env.GITHUB_TOKEN}`;
         }
 
-        const ghRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents`, { headers });
+        // 1. Get Default Branch (e.g. main or master)
+        const repoMeta = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers });
+        if (!repoMeta.ok) return NextResponse.json({ error: "Repo not found" }, { status: 404 });
+        const { default_branch } = await repoMeta.json();
 
-        if (!ghRes.ok) {
-            if (ghRes.status === 403) {
-                return NextResponse.json({ error: "GitHub API Rate Limit Exceeded. Please add GITHUB_TOKEN to .env.local" }, { status: 403 });
-            }
-            return NextResponse.json({ error: "Repo not found or private" }, { status: 404 });
-        }
+        // 2. Fetch Recursive Tree (The "Deep Read")
+        // This gets ALL files, not just the root
+        const treeRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees/${default_branch}?recursive=1`, { headers });
+        if (!treeRes.ok) return NextResponse.json({ error: "Failed to fetch tree" }, { status: 404 });
 
-        const files = await ghRes.json();
+        const treeData = await treeRes.json();
 
-        // 2. Analyze Structure (Smart Filtered Mode)
-        const nodes: string[] = [];
-        const edges: string[] = [];
+        // 3. Smart Filter & Limit
+        // We can't show 10,000 files. We focus on specific depths and types.
+        let nodes: string[] = [];
+        let edges: string[] = [];
+        const processedPaths = new Set<string>();
 
-        // Core Node
+        // Core Repo Node
         nodes.push(`Repo("${repo}")`);
         nodes.push(`style Repo fill:#fff,stroke:#333,stroke-width:4px`);
+        processedPaths.add(""); // Root
 
-        // Filter and Limit (To keep diagrams beautiful)
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const visibleFiles = files
-            .filter((f: any) => !f.name.startsWith('.')) // Hide .github, .gitignore, etc.
-            .slice(0, 25); // Limit to top 25 items to prevent "Graph Noise"
+        const rawFiles = treeData.tree || [];
 
-        // Iterate
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        visibleFiles.forEach((file: any) => {
-            const cleanName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '');
-            const nodeId = `node_${cleanName.replace(/[^a-zA-Z0-9]/g, '')}`;
-
-            if (file.type === 'dir') {
-                nodes.push(`${nodeId}["📂 ${file.name}"]`);
-                edges.push(`Repo --> ${nodeId}`);
-            } else {
-                if (file.name.endsWith('.json') || file.name.endsWith('.config.js') || file.name.endsWith('.yml')) {
-                    nodes.push(`${nodeId}("⚙️ ${file.name}")`);
-                } else if (file.name.endsWith('.md')) {
-                    nodes.push(`${nodeId}>"📝 ${file.name}"]`);
-                } else {
-                    nodes.push(`${nodeId}("📄 ${file.name}")`);
-                }
-                edges.push(`Repo --> ${nodeId}`);
-            }
+        // Filter: Ignore node_modules, .git, images, locks, etc.
+        const relevantFiles = rawFiles.filter((f: any) => {
+            const path = f.path;
+            if (path.startsWith('.')) return false; // Hidden files
+            if (path.includes('node_modules')) return false;
+            if (path.includes('dist') || path.includes('build')) return false;
+            if (path.endsWith('.lock') || path.endsWith('.json')) return true; // Configs are good
+            if (path.endsWith('.png') || path.endsWith('.jpg') || path.endsWith('.svg')) return false;
+            return true;
         });
 
-        if (files.length > 25) {
-            nodes.push(`More("... (${files.length - 25} more files)")`);
+        // Limit to top 50 most relevant items to keep diagram clean
+        // We prioritize folders and root files, then deep source files
+        const limitedFiles = relevantFiles.slice(0, 50);
+
+        limitedFiles.forEach((file: any) => {
+            const pathParts = file.path.split('/');
+
+            // Reconstruct the path hierarchy
+            let parentId = "Repo";
+
+            pathParts.forEach((part: string, index: number) => {
+                const isLast = index === pathParts.length - 1;
+                const currentPath = pathParts.slice(0, index + 1).join('/');
+                const nodeId = `node_${currentPath.replace(/[^a-zA-Z0-9]/g, '')}`;
+
+                // Avoid duplicates
+                if (!processedPaths.has(currentPath)) {
+                    processedPaths.add(currentPath);
+
+                    // Determine shape/icon
+                    if (isLast && file.type === 'blob') {
+                        // It's a file
+                        if (part.endsWith('.js') || part.endsWith('.ts') || part.endsWith('.tsx')) {
+                            nodes.push(`${nodeId}("📄 ${part}")`);
+                        } else if (part.endsWith('json') || part.endsWith('yml')) {
+                            nodes.push(`${nodeId}("⚙️ ${part}")`);
+                        } else {
+                            nodes.push(`${nodeId}("${part}")`);
+                        }
+                    } else {
+                        // It's a folder (intermediate or final)
+                        nodes.push(`${nodeId}["📂 ${part}"]`);
+                    }
+
+                    // Link to parent
+                    edges.push(`${parentId} --> ${nodeId}`);
+                }
+
+                parentId = nodeId; // Set current as parent for next iteration
+            });
+        });
+
+        if (relevantFiles.length > 50) {
+            nodes.push(`More("... (${relevantFiles.length - 50} hidden items)")`);
             edges.push(`Repo -.-> More`);
         }
 
-        // 3. Construct Mermaid
         const diagram = `
     graph TD
     ${nodes.join('\n    ')}
     ${edges.join('\n    ')}
     `;
 
-        return NextResponse.json({
-            diagram: diagram,
-            status: "SUCCESS",
-        });
+        return NextResponse.json({ diagram, status: "SUCCESS" });
+
     } catch (error) {
         console.error(error);
-        return NextResponse.json(
-            { error: "Internal Server Error" },
-            { status: 500 }
-        );
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }
