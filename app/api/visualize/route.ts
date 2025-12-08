@@ -15,36 +15,54 @@ export async function POST(req: NextRequest) {
         }
         const [, owner, repo] = match;
 
-        // 1. Fetch File Tree from GitHub API (Public)
+        // 1. Fetch File Tree from GitHub API
         console.log(`Fetching structure for ${owner}/${repo}...`);
-        const ghRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents`);
+
+        const headers: HeadersInit = {
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "Repo-Ray-Hackathon-App"
+        };
+
+        // Use Token if available (Crucial for Rate Limits)
+        if (process.env.GITHUB_TOKEN) {
+            headers["Authorization"] = `token ${process.env.GITHUB_TOKEN}`;
+        }
+
+        const ghRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents`, { headers });
 
         if (!ghRes.ok) {
-            return NextResponse.json({ error: "Repo not found or private (Rate Limit might be hit)" }, { status: 404 });
+            if (ghRes.status === 403) {
+                return NextResponse.json({ error: "GitHub API Rate Limit Exceeded. Please add GITHUB_TOKEN to .env.local" }, { status: 403 });
+            }
+            return NextResponse.json({ error: "Repo not found or private" }, { status: 404 });
         }
 
         const files = await ghRes.json();
 
-        // 2. Analyze Structure (Detailed Tree Mode - Enhanced)
+        // 2. Analyze Structure (Smart Filtered Mode)
         const nodes: string[] = [];
         const edges: string[] = [];
 
         // Core Node
         nodes.push(`Repo("${repo}")`);
-        nodes.push(`style Repo fill:#fff,stroke:#333,stroke-width:4px`); // Highlight Main Node
+        nodes.push(`style Repo fill:#fff,stroke:#333,stroke-width:4px`);
 
-        // Iterate through all fetched files
+        // Filter and Limit (To keep diagrams beautiful)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        files.forEach((file: any) => {
-            const cleanName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, ''); // Keep dots/dashes
-            const nodeId = `node_${cleanName.replace(/[^a-zA-Z0-9]/g, '')}`; // Safe ID
+        const visibleFiles = files
+            .filter((f: any) => !f.name.startsWith('.')) // Hide .github, .gitignore, etc.
+            .slice(0, 25); // Limit to top 25 items to prevent "Graph Noise"
+
+        // Iterate
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        visibleFiles.forEach((file: any) => {
+            const cleanName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '');
+            const nodeId = `node_${cleanName.replace(/[^a-zA-Z0-9]/g, '')}`;
 
             if (file.type === 'dir') {
-                // Directories are Rectangles [ ]
                 nodes.push(`${nodeId}["📂 ${file.name}"]`);
                 edges.push(`Repo --> ${nodeId}`);
             } else {
-                // Files are Rounded Rectangles ( ) or different shapes based on extension
                 if (file.name.endsWith('.json') || file.name.endsWith('.config.js') || file.name.endsWith('.yml')) {
                     nodes.push(`${nodeId}("⚙️ ${file.name}")`);
                 } else if (file.name.endsWith('.md')) {
@@ -55,6 +73,11 @@ export async function POST(req: NextRequest) {
                 edges.push(`Repo --> ${nodeId}`);
             }
         });
+
+        if (files.length > 25) {
+            nodes.push(`More("... (${files.length - 25} more files)")`);
+            edges.push(`Repo -.-> More`);
+        }
 
         // 3. Construct Mermaid
         const diagram = `
