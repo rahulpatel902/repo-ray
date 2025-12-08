@@ -1,44 +1,74 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// Mock response for "Repo-Ray" demo (until Kestra is connected live)
-// This ensures the UI works immediately for the Hackathon video.
-const MOCK_MERMAID = `
-graph TD
-    A[User] -->|Visits| B(Landing Page)
-    B -->|Enters URL| C{Valid URL?}
-    C -- Yes --> D[API Route /api/visualize]
-    C -- No --> E[Show Error]
-    D -->|POST| F[Kestra Backend]
-    F -->|Task 1| G[Fetch GitHub Code]
-    F -->|Task 2| H[AI Analysis]
-    H -->|Result| I[Mermaid Syntax]
-    I -->|Return| B
-    style A fill:#f9f,stroke:#333,stroke-width:4px
-    style F fill:#bbf,stroke:#333,stroke-width:2px
-`;
-
 export async function POST(req: NextRequest) {
     try {
         const { repoUrl } = await req.json();
 
         if (!repoUrl) {
-            return NextResponse.json(
-                { error: "Repository URL is required" },
-                { status: 400 }
-            );
+            return NextResponse.json({ error: "Repository URL is required" }, { status: 400 });
         }
 
-        // TODO: In Phase 3, we will replace this with the actual Kestra API call.
-        // await fetch('http://localhost:8080/api/v1/executions/trigger/company.team/repo-ray-analyzer', ...)
+        // Parse Owner/Repo
+        const match = repoUrl.match(/github\.com\/([^\/]+)\/([^\/]+)/);
+        if (!match) {
+            return NextResponse.json({ error: "Invalid GitHub URL" }, { status: 400 });
+        }
+        const [, owner, repo] = match;
 
-        // Simulating delay for realism
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        // 1. Fetch File Tree from GitHub API (Public)
+        console.log(`Fetching structure for ${owner}/${repo}...`);
+        const ghRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents`);
+
+        if (!ghRes.ok) {
+            return NextResponse.json({ error: "Repo not found or private (Rate Limit might be hit)" }, { status: 404 });
+        }
+
+        const files = await ghRes.json();
+
+        // 2. Analyze Structure (Detailed Tree Mode - Enhanced)
+        const nodes: string[] = [];
+        const edges: string[] = [];
+
+        // Core Node
+        nodes.push(`Repo("${repo}")`);
+        nodes.push(`style Repo fill:#fff,stroke:#333,stroke-width:4px`); // Highlight Main Node
+
+        // Iterate through all fetched files
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        files.forEach((file: any) => {
+            const cleanName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, ''); // Keep dots/dashes
+            const nodeId = `node_${cleanName.replace(/[^a-zA-Z0-9]/g, '')}`; // Safe ID
+
+            if (file.type === 'dir') {
+                // Directories are Rectangles [ ]
+                nodes.push(`${nodeId}["📂 ${file.name}"]`);
+                edges.push(`Repo --> ${nodeId}`);
+            } else {
+                // Files are Rounded Rectangles ( ) or different shapes based on extension
+                if (file.name.endsWith('.json') || file.name.endsWith('.config.js') || file.name.endsWith('.yml')) {
+                    nodes.push(`${nodeId}("⚙️ ${file.name}")`);
+                } else if (file.name.endsWith('.md')) {
+                    nodes.push(`${nodeId}>"📝 ${file.name}"]`);
+                } else {
+                    nodes.push(`${nodeId}("📄 ${file.name}")`);
+                }
+                edges.push(`Repo --> ${nodeId}`);
+            }
+        });
+
+        // 3. Construct Mermaid
+        const diagram = `
+    graph TD
+    ${nodes.join('\n    ')}
+    ${edges.join('\n    ')}
+    `;
 
         return NextResponse.json({
-            diagram: MOCK_MERMAID,
+            diagram: diagram,
             status: "SUCCESS",
         });
     } catch (error) {
+        console.error(error);
         return NextResponse.json(
             { error: "Internal Server Error" },
             { status: 500 }
