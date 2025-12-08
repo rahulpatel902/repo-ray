@@ -1,0 +1,11 @@
+{
+    "mcpServers": {
+        "repo-ray": {
+            "command": "node",
+            "args": [
+                "C:/Users/mp902/Desktop/Repo Ray/repo-ray/mcp-server/build/index.js"
+            ],
+            "env": {}
+        }
+    }
+}

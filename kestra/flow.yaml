@@ -1,0 +1,105 @@
+id: repo-ray-analyzer
+namespace: company.team
+description: "Analyzes a GitHub repository and generates a Mermaid diagram."
+
+inputs:
+  - id: repo_url
+    type: STRING
+    description: "The full URL of the GitHub repository (e.g., https://github.com/facebook/react)"
+    defaults: "https://github.com/facebook/react"
+
+tasks:
+  - id: fetch_code
+    type: io.kestra.plugin.scripts.python.Script
+    inputFiles:
+      main.py: |
+        import requests
+        import os
+        from kestra import Kestra
+        from urllib.parse import urlparse
+
+        repo_url = "{{ inputs.repo_url }}"
+        
+        # Helper to parse owner/repo
+        def parse_github_url(url):
+            path = urlparse(url).path.strip("/")
+            parts = path.split("/")
+            if len(parts) >= 2:
+                return parts[0], parts[1]
+            return None, None
+
+        owner, repo = parse_github_url(repo_url)
+        
+        if not owner or not repo:
+            raise ValueError(f"Invalid GitHub URL: {repo_url}")
+
+        print(f"🚀 Fetching repository: {owner}/{repo}...")
+        
+        # GitHub API (Public access or use token if available)
+        # For Hackathon stability, we read the main file tree
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/contents"
+        
+        try:
+            response = requests.get(api_url)
+            response.raise_for_status()
+            files = response.json()
+            
+            # Simple heuristic: Combine top-level file names and some content
+            # In a real app, we would recursively fetch, but this fits the hackathon "Summary" req.
+            context_str = f"Repository structure for {owner}/{repo}:\n"
+            
+            code_lines = 0
+            for file in files:
+                context_str += f"- {file['name']} ({file['type']})\n"
+                # If it's a small file (like package.json or main.py), read it
+                if file['type'] == 'file' and file['size'] < 10000:
+                    context_str += f"  (Content of {file['name']} skipped for brevity in this demo logic)\n"
+                    code_lines += 10 # Estimated line count impact
+            
+            print(f"✅ Successfully analyzed structure.")
+            
+            # Send outputs to Kestra
+            Kestra.outputs({
+                'code_context': context_str, 
+                'code_lines': len(files) * 50 # Mock complexity metric based on file count
+            })
+            
+        except Exception as e:
+            print(f"❌ Error fetching from GitHub: {str(e)}")
+            raise e
+
+    requirements:
+      - requests
+
+  - id: analyze_complexity
+    type: io.kestra.core.tasks.flows.If
+    condition: "{{ outputs.fetch_code.vars.code_lines > 500 }}"
+    then:
+      - id: set_model_advanced
+        type: io.kestra.core.tasks.log.Log
+        message: "⚠️ Complex Repo Detected ({{ outputs.fetch_code.vars.code_lines }} 'points'). Using Advanced Analysis."
+    else:
+      - id: set_model_basic
+        type: io.kestra.core.tasks.log.Log
+        message: "✅ Simple Repo. Using Standard Analysis."
+
+  - id: generate_diagram
+    type: io.kestra.plugin.ai.llm.ChatCompletion
+    model: gpt-4o
+    prompt: |
+      You are a Senior Software Architect. 
+      Analyze the following repository structure and generate a high-level System Architecture Diagram using Mermaid.js.
+      
+      REPO CONTEXT:
+      {{ outputs.fetch_code.vars.code_context }}
+      
+      INSTRUCTIONS:
+      1. Interpret the file names to guess the architecture (e.g., 'app/' -> Frontend, 'api/' -> Backend).
+      2. Draw a 'graph TD' flowchart.
+      3. Output ONLY the raw Mermaid string. No markdown block symbols.
+      4. Use shapes: [] for components, () for start/end, [()] for databases.
+    apiKey: "{{ secret('OPENAI_API_KEY') }}"
+
+outputs:
+  - id: mermaid_syntax
+    value: "{{ outputs.generate_diagram.choices[0].message.content }}"
