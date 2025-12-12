@@ -3,7 +3,6 @@
 > **See your code. Instantly.**
 > Transform complex GitHub repositories into beautiful, interactive architectural diagrams in seconds.
 
-![Repo-Ray Demo](https://github.com/rahulpatel902/repo-ray/blob/main/public/demo-screenshot.png?raw=true)
 
 ## 🚀 Key Features
 
